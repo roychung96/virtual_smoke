@@ -1,96 +1,49 @@
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 
-export default async function handler(req, res) {
+const getMimeType = (filePath) => {
+  const ext = filePath.split('.').pop().toLowerCase();
+  const types = {
+    html: 'text/html; charset=utf-8',
+    js: 'application/javascript',
+    css: 'text/css',
+    json: 'application/json',
+    svg: 'image/svg+xml',
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    wasm: 'application/wasm',
+    ico: 'image/x-icon',
+  };
+  return types[ext] || 'application/octet-stream';
+};
+
+export default function handler(req, res) {
   try {
-    // Try to import the CF Worker handler
-    const cfWorkerModule = await import('../dist/server/index.js');
-    const cfHandler = cfWorkerModule.default;
+    const pathname = new URL(req.url, `http://${req.headers.host}`).pathname;
+    let filePath = join(process.cwd(), 'dist/client', pathname);
 
-    if (!cfHandler || !cfHandler.fetch) {
-      throw new Error('CF Worker handler not found or missing fetch method');
+    // If it's a directory or root, try index.html
+    if (pathname === '/' || pathname.endsWith('/')) {
+      filePath = join(process.cwd(), 'dist/client', 'index.html');
     }
 
-    // Build a Request-like object for the CF Worker
-    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-    const cfRequest = new Request(url, {
-      method: req.method,
-      headers: new Headers(req.headers),
-      body: ['GET', 'HEAD'].includes(req.method) ? null : req.body,
-    });
-
-    // Create a minimal env object for CF Worker
-    const env = {
-      ASSETS: {
-        async fetch(request) {
-          // Serve static assets from dist/client
-          const pathname = new URL(request.url).pathname;
-          const filePath = join(process.cwd(), 'dist/client', pathname);
-
-          if (existsSync(filePath)) {
-            const content = readFileSync(filePath);
-            return new Response(content, { status: 200 });
-          }
-          return new Response('Not found', { status: 404 });
-        },
-      },
-      IMAGES: {
-        async input(data) {
-          return {
-            transform() {
-              return { response: new Response(data, { status: 200 }) };
-            },
-          };
-        },
-      },
-    };
-
-    // Create a context object with waitUntil method
-    const ctx = {
-      waitUntil: (promise) => {
-        // In Vercel, we don't need to explicitly handle this
-        // but we need to consume the promise to avoid unhandled rejections
-        promise.catch(err => console.error('Background task error:', err));
-      },
-    };
-
-    // Call the CF Worker handler
-    const response = await cfHandler.fetch(cfRequest, env, ctx);
-
-    // Convert Response to Vercel format
-    const buffer = await response.arrayBuffer();
-    for (const [key, value] of response.headers) {
-      res.setHeader(key, value);
+    // Check if file exists
+    if (!existsSync(filePath)) {
+      // For SPA routing, fallback to index.html
+      filePath = join(process.cwd(), 'dist/client', 'index.html');
     }
-    res.status(response.status);
-    res.end(Buffer.from(buffer));
+
+    if (existsSync(filePath)) {
+      const content = readFileSync(filePath);
+      res.setHeader('Content-Type', getMimeType(filePath));
+      res.setHeader('Cache-Control', 'public, max-age=3600');
+      res.status(200).end(content);
+      return;
+    }
+
+    res.status(404).json({ error: 'Not found' });
   } catch (error) {
     console.error('Handler error:', error);
-
-    // Fallback: try to serve static files if CF handler fails
-    try {
-      const assetPath = req.url === '/' ? 'index.html' : req.url.replace(/^\//, '');
-      const filePath = join(process.cwd(), 'dist/client', assetPath);
-
-      if (existsSync(filePath)) {
-        const ext = assetPath.split('.').pop().toLowerCase();
-        const mimeTypes = {
-          html: 'text/html',
-          js: 'application/javascript',
-          css: 'text/css',
-          json: 'application/json',
-          svg: 'image/svg+xml',
-          png: 'image/png',
-          wasm: 'application/wasm',
-        };
-        res.setHeader('Content-Type', mimeTypes[ext] || 'text/plain');
-        res.status(200).send(readFileSync(filePath));
-        return;
-      }
-    } catch (fallbackError) {
-      console.error('Fallback error:', fallbackError);
-    }
-
-    res.status(500).json({ error: 'Internal server error', message: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 }
