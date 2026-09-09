@@ -1,12 +1,18 @@
-import cfWorkerHandler from '../dist/server/index.js';
 import { readFileSync, existsSync } from 'fs';
 import { join } from 'path';
 
-// Cloudflare Worker handler adapter for Vercel
 export default async function handler(req, res) {
   try {
+    // Try to import the CF Worker handler
+    const cfWorkerModule = await import('../dist/server/index.js');
+    const cfHandler = cfWorkerModule.default;
+
+    if (!cfHandler || !cfHandler.fetch) {
+      throw new Error('CF Worker handler not found or missing fetch method');
+    }
+
     // Build a Request-like object for the CF Worker
-    const url = new URL(req.url, `http://${req.headers.host}`);
+    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
     const cfRequest = new Request(url, {
       method: req.method,
       headers: new Headers(req.headers),
@@ -40,7 +46,7 @@ export default async function handler(req, res) {
     };
 
     // Call the CF Worker handler
-    const response = await cfWorkerHandler.default.fetch(cfRequest, env, {});
+    const response = await cfHandler.fetch(cfRequest, env, {});
 
     // Convert Response to Vercel format
     const buffer = await response.arrayBuffer();
@@ -51,6 +57,31 @@ export default async function handler(req, res) {
     res.end(Buffer.from(buffer));
   } catch (error) {
     console.error('Handler error:', error);
+
+    // Fallback: try to serve static files if CF handler fails
+    try {
+      const assetPath = req.url === '/' ? 'index.html' : req.url.replace(/^\//, '');
+      const filePath = join(process.cwd(), 'dist/client', assetPath);
+
+      if (existsSync(filePath)) {
+        const ext = assetPath.split('.').pop().toLowerCase();
+        const mimeTypes = {
+          html: 'text/html',
+          js: 'application/javascript',
+          css: 'text/css',
+          json: 'application/json',
+          svg: 'image/svg+xml',
+          png: 'image/png',
+          wasm: 'application/wasm',
+        };
+        res.setHeader('Content-Type', mimeTypes[ext] || 'text/plain');
+        res.status(200).send(readFileSync(filePath));
+        return;
+      }
+    } catch (fallbackError) {
+      console.error('Fallback error:', fallbackError);
+    }
+
     res.status(500).json({ error: 'Internal server error', message: error.message });
   }
 }
