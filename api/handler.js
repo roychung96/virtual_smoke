@@ -45,8 +45,17 @@ export default async function handler(req, res) {
       },
     };
 
+    // Create a context object with waitUntil method
+    const ctx = {
+      waitUntil: (promise) => {
+        // In Vercel, we don't need to explicitly handle this
+        // but we need to consume the promise to avoid unhandled rejections
+        promise.catch(err => console.error('Background task error:', err));
+      },
+    };
+
     // Call the CF Worker handler
-    const response = await cfHandler.fetch(cfRequest, env, {});
+    const response = await cfHandler.fetch(cfRequest, env, ctx);
 
     // Convert Response to Vercel format
     const buffer = await response.arrayBuffer();
